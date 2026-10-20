@@ -1,11 +1,20 @@
-# SayedTech Updates
+# Sayed tech — تنزيل وتحديث
 
-## Release 0.65
-The updater manifest is in `latest.json`. Upload the prepared source archive as a GitHub Release asset with these exact values:
+## تنزيل آخر مثبت Windows
 
-- Tag: `v0.65`
-- Asset filename: `SayedTech_Stage1-0.65.zip`
+[تنزيل آخر نسخة من SayedTech](https://github.com/AliSayed-stack/SayedTech-Updates/releases/latest/download/SayedTech-Setup-Windows-x64.exe)
 
-The asset must be attached to release `v0.65`; the manifest already contains its HTTPS download URL and SHA-256. The repository must remain public for end-user update checks to fetch `latest.json` and the release asset without signing in.
+يظهر الملف بعد أن ينهي GitHub Actions بناءه للإصدار. المستودع خاص حالياً؛ الزملاء يحتاجون صلاحية دخول، كما أن فحص التحديث التلقائي يحتاج مستودعاً عاماً أو رابطاً متاحاً دون تسجيل دخول.
 
-The prepared archive contains the updater configuration pointing to this repository's raw `latest.json`.
+## الإصدار الأول 0.65
+
+1. أنشئ إصداراً بوسم `v0.65`.
+2. أرفق الحزمة `SayedTech_Stage1-0.65.zip` كملف في الإصدار.
+3. انشر الإصدار. سيبني GitHub Actions ملف `SayedTech-Setup-Windows-x64.exe` ويرفقه تلقائياً، ثم يحدّث `latest.json` ببصمة SHA-256.
+4. بعد اكتمال العملية، رابط «تنزيل آخر نسخة» أعلاه سيشير إلى المثبت.
+
+## الإصدارات التالية
+
+ارفع ZIP المصدر المطابق للإصدار، مثل `SayedTech_Stage1-0.66.zip`، إلى إصدار `v0.66`. يجب أن يطابق رقم الوسم رقم النسخة داخل `core.py`. عند النشر، يُبنى المثبت ويُحدّث رابط التحقق تلقائياً.
+
+لا ترفع قاعدة بيانات فعلية أو ملفاً يحتوي بيانات تلاميذ إلى GitHub. حزمة التطبيق تحتوي قوالب Excel وأداة MEHENSL الموروثة.
