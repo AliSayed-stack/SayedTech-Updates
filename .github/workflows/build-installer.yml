@@ -82,7 +82,8 @@ jobs:
         shell: pwsh
         run: |
           Set-Location "$env:APP_SOURCE"
-          python build_windows.py
+          Copy-Item "$env:GITHUB_WORKSPACE\build_support\build_portable.py" "$env:APP_SOURCE\_ci_build_portable.py" -Force
+          python _ci_build_portable.py
           $portableZip = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Windows-x64.zip"
           if (-not (Test-Path $portableZip)) { throw 'The portable app build did not produce its ZIP.' }
 
