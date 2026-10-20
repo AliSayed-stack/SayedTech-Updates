@@ -78,18 +78,67 @@ jobs:
           "SOURCE_ZIP=$sourceZip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SOURCE_URL=$sourceUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build and self-test Windows installer
+      - name: Build app and create standalone Windows installer
         shell: pwsh
         run: |
           Set-Location "$env:APP_SOURCE"
           python build_windows.py
-          $installer = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Setup-Windows-x64.exe"
-          if (-not (Test-Path $installer)) { throw 'Windows installer build did not produce the expected EXE.' }
+          $portableZip = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Windows-x64.zip"
+          if (-not (Test-Path $portableZip)) { throw 'The portable app build did not produce its ZIP.' }
+
           $version = (python -c "import core; print(core.APP_VERSION)").Trim()
           if (-not $version) { throw 'Could not read APP_VERSION from core.py.' }
           $tagVersion = $env:RELEASE_TAG -replace '^v', ''
           $tagVersion = $tagVersion -replace '^\.(?=\d)', '0.'
           if ($tagVersion -ne $version) { throw "Release tag $env:RELEASE_TAG does not match app version $version." }
+
+          $installerTool = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $installerTool)) {
+            winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install Inno Setup on the build runner.' }
+          }
+          if (-not (Test-Path $installerTool)) { throw 'Inno Setup compiler was not found after installation.' }
+
+          $stage = Join-Path "$env:RUNNER_TEMP" "installer-stage"
+          $package = Join-Path $stage "SayedTech"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Expand-Archive -LiteralPath $portableZip -DestinationPath $stage -Force
+          if (-not (Test-Path (Join-Path $package "SayedTech.exe"))) { throw 'The built app executable is missing from the package.' }
+
+          $scriptPath = Join-Path $stage "SayedTech.iss"
+          $iss = @"
+          [Setup]
+          AppId={{A94C6801-4959-4BEA-A0C7-95CFE34A6A65}
+          AppName=Sayed tech
+          AppVersion=$version
+          DefaultDirName={localappdata}\Programs\SayedTech
+          DefaultGroupName=Sayed tech
+          OutputDir=$env:APP_SOURCE\dist
+          OutputBaseFilename=SayedTech-Setup-Windows-x64
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          Uninstallable=yes
+
+          [Files]
+          Source: "$package\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\Sayed tech"; Filename: "{app}\SayedTech.exe"
+          Name: "{autodesktop}\Sayed tech"; Filename: "{app}\SayedTech.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+          "@
+          Set-Content -LiteralPath $scriptPath -Value $iss -Encoding UTF8
+          & $installerTool $scriptPath
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed to create the Windows installer.' }
+
+          $installer = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Setup-Windows-x64.exe"
+          if (-not (Test-Path $installer)) { throw 'The standalone Windows installer EXE was not produced.' }
           "INSTALLER_PATH=$installer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
