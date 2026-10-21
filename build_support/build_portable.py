@@ -28,12 +28,7 @@ def main():
     os.chdir(ROOT)
     ensure()
     subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller==6.22.3"], check=True)
-    env = dict(os.environ, PLAYWRIGHT_BROWSERS_PATH="0")
-    subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "firefox", "chromium"],
-        env=env,
-        check=True,
-    )
+    env = clean_environment()
     with tempfile.TemporaryDirectory(prefix="SayedTech-build-") as temp:
         stage = Path(temp)
         common = [
@@ -105,7 +100,7 @@ def main():
                     "app": core.APP_VERSION,
                     "python": sys.version.split()[0],
                     "platform": "Windows x64",
-                    "bundled_browsers": ["Firefox", "Chromium"],
+                    "browser_mode": "installed Chrome/Edge with app-owned profiles",
                     "offline_smoke_checks": "passed",
                 },
                 indent=2,
