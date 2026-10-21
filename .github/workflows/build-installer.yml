@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/build-installer.yml'
+      - 'SayedTech_Stage1-*.zip'
   release:
     types: [published]
   workflow_dispatch:
@@ -41,10 +42,276 @@ jobs:
         run: |
           $tag = if ($env:RELEASE_EVENT_TAG) { $env:RELEASE_EVENT_TAG } else { $env:MANUAL_TAG }
           if (-not $tag) {
-            $tag = gh release list --repo "$env:GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName'
+            $packages = @(Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -File -Filter 'SayedTech_Stage1-*.zip' |
+              Where-Object { $_.Name -match '^SayedTech_Stage1-(\\d+\\.\\d+(?:\\.\\d+)?)\\.zip
+      - name: Download source ZIP from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $sourceUrl = $null
+          $assets = @($release.assets | Where-Object { $_.name -like 'SayedTech_Stage1-*.zip' })
+          if ($assets.Count -eq 1) {
+            $sourceUrl = $assets[0].browser_download_url
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-source" | Out-Null
+            gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern $assets[0].name --dir "$env:RUNNER_TEMP\release-source"
+            $sourceZip = Join-Path "$env:RUNNER_TEMP\release-source" $assets[0].name
+          } elseif ($assets.Count -eq 0) {
+            $attachment = [regex]::Match($release.body, 'https://github\.com/user-attachments/files/\d+/SayedTech_Stage1-\d+(?:\.\d+){1,2}\.zip')
+            if (-not $attachment.Success) { throw "No source ZIP asset or attachment link was found on release $env:RELEASE_TAG." }
+            $sourceUrl = $attachment.Value
+            $sourceName = [IO.Path]::GetFileName(([uri]$sourceUrl).AbsolutePath)
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-source" | Out-Null
+            $sourceZip = Join-Path "$env:RUNNER_TEMP\release-source" $sourceName
+            Invoke-WebRequest -Uri $sourceUrl -OutFile $sourceZip
+          } else {
+            throw "Expected one SayedTech source ZIP; found $($assets.Count)."
           }
-          if (-not $tag) { throw 'Release tag was not provided and no published release exists.' }
+          if (-not (Test-Path $sourceZip)) { throw 'Source ZIP download failed.' }
+          Expand-Archive -LiteralPath $sourceZip -DestinationPath "$env:RUNNER_TEMP\source" -Force
+          $app = Join-Path "$env:RUNNER_TEMP\source" "SayedTech_Stage1"
+          if (-not (Test-Path (Join-Path $app "build_windows.py"))) { throw 'Source ZIP does not contain SayedTech_Stage1/build_windows.py.' }
+          "APP_SOURCE=$app" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOURCE_ZIP=$sourceZip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOURCE_URL=$sourceUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build app and create standalone Windows installer
+        shell: pwsh
+        run: |
+          Set-Location "$env:APP_SOURCE"
+          Copy-Item "$env:GITHUB_WORKSPACE\build_support\build_portable.py" "$env:APP_SOURCE\_ci_build_portable.py" -Force
+          python _ci_build_portable.py
+          $portableZip = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Windows-x64.zip"
+          if (-not (Test-Path $portableZip)) { throw 'The portable app build did not produce its ZIP.' }
+
+          $version = (python -c "import core; print(core.APP_VERSION)").Trim()
+          if (-not $version) { throw 'Could not read APP_VERSION from core.py.' }
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $tagVersion = $tagVersion -replace '^\.(?=\d)', '0.'
+          if ($tagVersion -ne $version) { throw "Release tag $env:RELEASE_TAG does not match app version $version." }
+
+          $installerTool = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $installerTool)) {
+            winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install Inno Setup on the build runner.' }
+          }
+          if (-not (Test-Path $installerTool)) { throw 'Inno Setup compiler was not found after installation.' }
+
+          $stage = Join-Path "$env:RUNNER_TEMP" "installer-stage"
+          $package = Join-Path $stage "SayedTech"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Expand-Archive -LiteralPath $portableZip -DestinationPath $stage -Force
+          if (-not (Test-Path (Join-Path $package "SayedTech.exe"))) { throw 'The built app executable is missing from the package.' }
+
+          $scriptPath = Join-Path $stage "SayedTech.iss"
+          $iss = @"
+          [Setup]
+          AppId={{A94C6801-4959-4BEA-A0C7-95CFE34A6A65}
+          AppName=Sayed tech
+          AppVersion=$version
+          DefaultDirName={localappdata}\Programs\SayedTech
+          DefaultGroupName=Sayed tech
+          OutputDir=$env:APP_SOURCE\dist
+          OutputBaseFilename=SayedTech-Setup-Windows-x64
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          Uninstallable=yes
+
+          [Files]
+          Source: "$package\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\Sayed tech"; Filename: "{app}\SayedTech.exe"
+          Name: "{autodesktop}\Sayed tech"; Filename: "{app}\SayedTech.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+          "@
+          Set-Content -LiteralPath $scriptPath -Value $iss -Encoding UTF8
+          & $installerTool $scriptPath
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed to create the Windows installer.' }
+
+          $installer = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Setup-Windows-x64.exe"
+          if (-not (Test-Path $installer)) { throw 'The standalone Windows installer EXE was not produced.' }
+          "INSTALLER_PATH=$installer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Attach installer to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release upload "$env:RELEASE_TAG" "$env:INSTALLER_PATH" --repo "$env:GITHUB_REPOSITORY" --clobber
+
+      - name: Publish verified installer in latest.json
+        shell: pwsh
+        run: |
+          Set-Location "$env:APP_SOURCE"
+          $installerName = [IO.Path]::GetFileName("$env:INSTALLER_PATH")
+          $installerUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$installerName"
+          python publish_update.py --version "$env:APP_VERSION" --source "$env:SOURCE_ZIP" --source-url "$env:SOURCE_URL" --installer "$env:INSTALLER_PATH" --installer-url "$installerUrl" --output "$env:GITHUB_WORKSPACE\latest.json"
+          Set-Location "$env:GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Publish Windows installer manifest for $env:APP_VERSION"
+            git push origin HEAD:main
+          }
+ } |
+              ForEach-Object {
+                [pscustomobject]@{ Path=$_.FullName; Version=[version]([regex]::Match($_.Name, '^SayedTech_Stage1-(\\d+\\.\\d+(?:\\.\\d+)?)\\.zip
+      - name: Download source ZIP from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $sourceUrl = $null
+          $assets = @($release.assets | Where-Object { $_.name -like 'SayedTech_Stage1-*.zip' })
+          if ($assets.Count -eq 1) {
+            $sourceUrl = $assets[0].browser_download_url
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-source" | Out-Null
+            gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern $assets[0].name --dir "$env:RUNNER_TEMP\release-source"
+            $sourceZip = Join-Path "$env:RUNNER_TEMP\release-source" $assets[0].name
+          } elseif ($assets.Count -eq 0) {
+            $attachment = [regex]::Match($release.body, 'https://github\.com/user-attachments/files/\d+/SayedTech_Stage1-\d+(?:\.\d+){1,2}\.zip')
+            if (-not $attachment.Success) { throw "No source ZIP asset or attachment link was found on release $env:RELEASE_TAG." }
+            $sourceUrl = $attachment.Value
+            $sourceName = [IO.Path]::GetFileName(([uri]$sourceUrl).AbsolutePath)
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\release-source" | Out-Null
+            $sourceZip = Join-Path "$env:RUNNER_TEMP\release-source" $sourceName
+            Invoke-WebRequest -Uri $sourceUrl -OutFile $sourceZip
+          } else {
+            throw "Expected one SayedTech source ZIP; found $($assets.Count)."
+          }
+          if (-not (Test-Path $sourceZip)) { throw 'Source ZIP download failed.' }
+          Expand-Archive -LiteralPath $sourceZip -DestinationPath "$env:RUNNER_TEMP\source" -Force
+          $app = Join-Path "$env:RUNNER_TEMP\source" "SayedTech_Stage1"
+          if (-not (Test-Path (Join-Path $app "build_windows.py"))) { throw 'Source ZIP does not contain SayedTech_Stage1/build_windows.py.' }
+          "APP_SOURCE=$app" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOURCE_ZIP=$sourceZip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOURCE_URL=$sourceUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build app and create standalone Windows installer
+        shell: pwsh
+        run: |
+          Set-Location "$env:APP_SOURCE"
+          Copy-Item "$env:GITHUB_WORKSPACE\build_support\build_portable.py" "$env:APP_SOURCE\_ci_build_portable.py" -Force
+          python _ci_build_portable.py
+          $portableZip = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Windows-x64.zip"
+          if (-not (Test-Path $portableZip)) { throw 'The portable app build did not produce its ZIP.' }
+
+          $version = (python -c "import core; print(core.APP_VERSION)").Trim()
+          if (-not $version) { throw 'Could not read APP_VERSION from core.py.' }
+          $tagVersion = $env:RELEASE_TAG -replace '^v', ''
+          $tagVersion = $tagVersion -replace '^\.(?=\d)', '0.'
+          if ($tagVersion -ne $version) { throw "Release tag $env:RELEASE_TAG does not match app version $version." }
+
+          $installerTool = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $installerTool)) {
+            winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install Inno Setup on the build runner.' }
+          }
+          if (-not (Test-Path $installerTool)) { throw 'Inno Setup compiler was not found after installation.' }
+
+          $stage = Join-Path "$env:RUNNER_TEMP" "installer-stage"
+          $package = Join-Path $stage "SayedTech"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Expand-Archive -LiteralPath $portableZip -DestinationPath $stage -Force
+          if (-not (Test-Path (Join-Path $package "SayedTech.exe"))) { throw 'The built app executable is missing from the package.' }
+
+          $scriptPath = Join-Path $stage "SayedTech.iss"
+          $iss = @"
+          [Setup]
+          AppId={{A94C6801-4959-4BEA-A0C7-95CFE34A6A65}
+          AppName=Sayed tech
+          AppVersion=$version
+          DefaultDirName={localappdata}\Programs\SayedTech
+          DefaultGroupName=Sayed tech
+          OutputDir=$env:APP_SOURCE\dist
+          OutputBaseFilename=SayedTech-Setup-Windows-x64
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          Uninstallable=yes
+
+          [Files]
+          Source: "$package\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\Sayed tech"; Filename: "{app}\SayedTech.exe"
+          Name: "{autodesktop}\Sayed tech"; Filename: "{app}\SayedTech.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+          "@
+          Set-Content -LiteralPath $scriptPath -Value $iss -Encoding UTF8
+          & $installerTool $scriptPath
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed to create the Windows installer.' }
+
+          $installer = Join-Path "$env:APP_SOURCE" "dist\SayedTech-Setup-Windows-x64.exe"
+          if (-not (Test-Path $installer)) { throw 'The standalone Windows installer EXE was not produced.' }
+          "INSTALLER_PATH=$installer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Attach installer to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release upload "$env:RELEASE_TAG" "$env:INSTALLER_PATH" --repo "$env:GITHUB_REPOSITORY" --clobber
+
+      - name: Publish verified installer in latest.json
+        shell: pwsh
+        run: |
+          Set-Location "$env:APP_SOURCE"
+          $installerName = [IO.Path]::GetFileName("$env:INSTALLER_PATH")
+          $installerUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$installerName"
+          python publish_update.py --version "$env:APP_VERSION" --source "$env:SOURCE_ZIP" --source-url "$env:SOURCE_URL" --installer "$env:INSTALLER_PATH" --installer-url "$installerUrl" --output "$env:GITHUB_WORKSPACE\latest.json"
+          Set-Location "$env:GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Publish Windows installer manifest for $env:APP_VERSION"
+            git push origin HEAD:main
+          }
+).Groups[1].Value) }
+              } | Sort-Object Version -Descending)
+            if ($packages.Count -eq 0) { throw 'No versioned SayedTech_Stage1 ZIP exists in the repository.' }
+            $version = $packages[0].Version.ToString()
+            $tag = if ($version.StartsWith('0.')) { 'v.' + $version.Substring(2) } else { 'v' + $version }
+          }
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish uploaded source ZIP as a release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG -replace '^v', ''
+          $version = $version -replace '^\\.(?=\\d)', '0.'
+          $source = Join-Path $env:GITHUB_WORKSPACE "SayedTech_Stage1-$version.zip"
+          if (-not (Test-Path -LiteralPath $source)) { throw "Source ZIP for $env:RELEASE_TAG is missing." }
+          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:RELEASE_TAG" "$source" --repo "$env:GITHUB_REPOSITORY" --clobber
+          } else {
+            gh release create "$env:RELEASE_TAG" "$source" --repo "$env:GITHUB_REPOSITORY" --target main --title "Sayed tech $version" --notes "Windows installer is being built."
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish source ZIP on the release.' }
 
       - name: Download source ZIP from release
         env:
