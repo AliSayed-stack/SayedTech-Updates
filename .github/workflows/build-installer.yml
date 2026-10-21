@@ -50,7 +50,7 @@ jobs:
       - name: Publish uploaded ZIP as release
         if: github.event_name == 'push'
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $packages = @(Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -File -Filter 'SayedTech_Stage1-*.zip' |
