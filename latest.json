@@ -1,11 +1,11 @@
 {
-  "version": "1.33",
+  "version": "1.43",
   "source": {
-    "url": "https://github.com/AliSayed-stack/SayedTech-Updates/releases/download/v1.33/SayedTech_Stage1-1.33.zip",
-    "sha256": "23a18e5fc526281042b821d69a66261492461961371804ce1b4584e5b9bac2c6"
+    "url": "https://github.com/AliSayed-stack/SayedTech-Updates/releases/download/v1.43/SayedTech_Stage1-1.43.zip",
+    "sha256": "60a96acda3c410c642e5ec5ee12c1e8ed39af67ab4bd42a646a65ef4d2b325eb"
   },
   "installer": {
-    "url": "https://github.com/AliSayed-stack/SayedTech-Updates/releases/download/v1.33/SayedTech-Setup-Windows-x64.exe",
-    "sha256": "ca29263790d24ec14d6fa20df38cc65d6575363f257a0e99b3ee1f0d770a3081"
+    "url": "https://github.com/AliSayed-stack/SayedTech-Updates/releases/download/v1.43/SayedTech-Setup-Windows-x64.exe",
+    "sha256": "bf22ef373c266791a4d7e90c4a2dbd99caeb7919eae50d8db2052adcddd4ce36"
   }
 }
